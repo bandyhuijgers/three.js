@@ -925,7 +925,11 @@ def generate_ascii_model(meshes, morphs,
     if option_animation:
         chunks = []
         for i, morphVertices in enumerate(morphs):
-            morphTarget = '{ "name": "%s_%06d", "vertices": [%s] }' % ("animation", i, morphVertices)
+            animname_complete = morphVertices["animname_complete"]
+            if not animname_complete:
+                animname_complete = "%s%06d" % (morphVertices["animname"].lower(), i)
+            
+            morphTarget = '{ "name": "%s", "vertices": [%s] }' % (animname_complete, morphVertices["morphVertices"])
             chunks.append(morphTarget)
 
         morphTargets_string = ",\n\t".join(chunks)
@@ -1034,7 +1038,7 @@ def generate_mesh_string(objects, scene,
         original_frame = scene.frame_current # save animation state
 
         scene_frames = range(scene.frame_start, scene.frame_end + 1, option_frame_step)
-
+        animname = "animation"
         for frame in scene_frames:
             scene.frame_set(frame, 0.0)
 
@@ -1046,7 +1050,7 @@ def generate_mesh_string(objects, scene,
                 frame_vertices.extend(mesh.vertices[:])
 
             morphVertices = generate_vertices(frame_vertices, option_vertices_truncate, option_vertices)
-            morphs.append(morphVertices)
+            morphs.append({"animname" : animname, "morphVertices" : morphVertices})
 
             # remove temp meshes
 
@@ -1079,6 +1083,104 @@ def generate_mesh_string(objects, scene,
         bpy.data.meshes.remove(mesh)
 
     return text, model_string
+
+def generate_mesh_string_nla(object, scene,
+                option_vertices,
+                option_vertices_truncate,
+                option_faces,
+                option_normals,
+                option_uv_coords,
+                option_materials,
+                option_colors,
+                align_model,
+                flipyz,
+                option_scale,
+                export_single_model,
+                option_copy_textures,
+                filepath,
+                option_animation,
+                option_frame_step):
+                    
+    meshes = extract_meshes([object], scene, export_single_model, option_scale, flipyz)
+
+    morphs = []
+
+    original_frame = scene.frame_current # save animation state
+    
+    # TODO set armature action to None
+    
+    nla_tracks = getNLATracks(object)
+    
+    # TODO mute all tracks
+    
+    for nla_track in nla_tracks:
+        print("NLA Track name: " + nla_track.name)
+        
+        for strip in nla_track.strips:
+            print("NLA strip name: " + strip.name)
+            
+            animname = strip.action.name
+
+            action_frames = range(int(strip.frame_start), int(strip.frame_end), option_frame_step)
+            
+            frame_index = 0
+            for frame in action_frames:
+                scene.frame_set(frame, 0.0)
+        
+                anim_meshes = extract_meshes([object], scene, export_single_model, option_scale, flipyz)
+        
+                frame_vertices = []
+        
+                for mesh, object in anim_meshes:
+                    frame_vertices.extend(mesh.vertices[:])
+        
+                morphVertices = generate_vertices(frame_vertices, option_vertices_truncate, option_vertices)
+                animname_complete = "%s%06d" % (animname.lower(), frame_index)
+                morphs.append({"animname_complete" : animname_complete, "morphVertices" : morphVertices})
+                
+                frame_index += 1
+        
+                # remove temp meshes
+        
+                for mesh, object in anim_meshes:
+                    bpy.data.meshes.remove(mesh)
+
+    scene.frame_set(original_frame, 0.0) # restore animation state
+
+
+    text, model_string = generate_ascii_model(meshes, morphs,
+                                scene,
+                                option_vertices,
+                                option_vertices_truncate,
+                                option_faces,
+                                option_normals,
+                                option_uv_coords,
+                                option_materials,
+                                option_colors,
+                                align_model,
+                                flipyz,
+                                option_scale,
+                                option_copy_textures,
+                                filepath,
+                                option_animation,
+                                option_frame_step)
+
+    # remove temp meshes
+
+    for mesh, object in meshes:
+        bpy.data.meshes.remove(mesh)
+
+    return text, model_string
+
+def getNLATracks(object):
+    tracks = []
+    for modifier in object.modifiers:
+        print("name: " + modifier.name + " type: " + modifier.type)
+        
+        if modifier.type == "ARMATURE":
+            tracks = modifier.object.animation_data.nla_tracks
+    
+    return tracks
 
 def export_mesh(objects,
                 scene, filepath,
@@ -1875,21 +1977,72 @@ def save(operator, context, filepath = "",
                      option_copy_textures)
 
     else:
+        exObjects = []
+        if option_animation:
+            for object in objects:
+                if object.type == "MESH" and object.THREE_exportGeometry:
+                    print("object: " + object.name)
+                    
+                    if len(object.modifiers) == 0:
+                        exObjects.append(object)
+                        continue;
+                    
+                    for modifier in object.modifiers:
+                        print("name: " + modifier.name + " type: " + modifier.type)
+                        
+                        if modifier.type == "ARMATURE":
+                            print("object has a armature")
+                            #fname = generate_mesh_filename(object.name, filepath)
+                            normpath = os.path.normpath(filepath)
+                            path, ext = os.path.splitext(normpath)
+                            fname = "%s_%s%s" % (path, object.name, ext)
+                            text, model_string = generate_mesh_string_nla(object,
+                                        scene,
+                                        option_vertices,
+                                        option_vertices_truncate,
+                                        option_faces,
+                                        option_normals,
+                                        option_uv_coords,
+                                        option_materials,
+                                        option_colors,
+                                        align_model,
+                                        option_flip_yz,
+                                        option_scale,
+                                        True,
+                                        option_copy_textures,
+                                        fname,
+                                        option_animation,
+                                        option_frame_step)
+                        
+                            write_file(fname, text)
+                        
+                            print("writing", fname, "done")
+                            
+                        else:
+                            print("no armature")
+                            exObjects.append(object)
+        else:
+            exObjects = objects
 
-        export_mesh(objects, scene, filepath,
-                    option_vertices,
-                    option_vertices_truncate,
-                    option_faces,
-                    option_normals,
-                    option_uv_coords,
-                    option_materials,
-                    option_colors,
-                    align_model,
-                    option_flip_yz,
-                    option_scale,
-                    True,            # export_single_model
-                    option_copy_textures,
-                    option_animation,
-                    option_frame_step)
+
+        for object in exObjects:
+            print("exObject: " + object.name)
+        
+        if len(exObjects) > 0:
+            export_mesh(exObjects, scene, filepath,
+                        option_vertices,
+                        option_vertices_truncate,
+                        option_faces,
+                        option_normals,
+                        option_uv_coords,
+                        option_materials,
+                        option_colors,
+                        align_model,
+                        option_flip_yz,
+                        option_scale,
+                        True,            # export_single_model
+                        option_copy_textures,
+                        option_animation,
+                        option_frame_step)
 
     return {'FINISHED'}
